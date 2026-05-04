@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -135,6 +136,10 @@ def main():
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--grad-clip", type=float, default=1.0,
                     help="max-norm for gradient clipping (lower = tighter / more stable)")
+    ap.add_argument("--bf16", action="store_true",
+                    help="enable bf16 mixed-precision autocast (CUDA only; ~2-3x speedup on tensor cores)")
+    ap.add_argument("--fp16", action="store_true",
+                    help="enable fp16 mixed-precision autocast with GradScaler (CUDA only)")
     ap.add_argument("--eval-every", type=int, default=500)
     ap.add_argument("--ckpt-every", type=int, default=1000)
     ap.add_argument("--val-frac", type=float, default=0.05)
@@ -185,6 +190,20 @@ def main():
 
     loss_fn = HTRMLoss(violation_weight=args.violation_weight, halt_weight=1.0).to(device)
     optim = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    # Mixed-precision autocast setup. bf16 is preferred on Ampere/Ada/Hopper
+    # GPUs because it doesn't need a GradScaler (wider exponent range than fp16).
+    autocast_dtype: torch.dtype | None = None
+    if args.bf16:
+        autocast_dtype = torch.bfloat16
+        print("Mixed precision: bf16 autocast ON")
+    elif args.fp16:
+        autocast_dtype = torch.float16
+        print("Mixed precision: fp16 autocast ON (with GradScaler)")
+    else:
+        print("Mixed precision: OFF (fp32)")
+    scaler = torch.amp.GradScaler("cuda") if args.fp16 else None
+    autocast_device = "cuda" if device.type == "cuda" else "cpu"
 
     log: list[dict] = []
     step = 0
@@ -430,25 +449,30 @@ def main():
             train_iter = iter(train_loader)
             batch = next(train_iter)
 
-        if use_curriculum:
-            puzzle, solution, _ = batch
-        else:
-            puzzle, solution = batch
+        # CurriculumSudokuDataset always returns (puzzle, solution, difficulty);
+        # difficulty is unused when curriculum mode is off.
+        puzzle, solution, _ = batch
         puzzle = puzzle.to(device)
         solution = solution.to(device)
 
-        out = model(puzzle, training=True, gradient_checkpoint=args.gradient_checkpoint)
-        # Halt-loss weight ramp 0 -> args.halt_weight over args.halt_ramp_steps.
-        if args.halt_ramp_steps > 0:
-            halt_w = min(step / args.halt_ramp_steps, 1.0) * args.halt_weight
+        # Forward + loss under optional autocast for mixed precision.
+        if autocast_dtype is not None:
+            ac_ctx = torch.amp.autocast(autocast_device, dtype=autocast_dtype)
         else:
-            halt_w = args.halt_weight
-        comps = loss_fn(
-            out["logits"], solution, out["halts"],
-            violation_weight=args.violation_weight,
-            halt_weight=halt_w,
-        )
-        total = comps["total"]
+            ac_ctx = nullcontext()
+        with ac_ctx:
+            out = model(puzzle, training=True, gradient_checkpoint=args.gradient_checkpoint)
+            # Halt-loss weight ramp 0 -> args.halt_weight over args.halt_ramp_steps.
+            if args.halt_ramp_steps > 0:
+                halt_w = min(step / args.halt_ramp_steps, 1.0) * args.halt_weight
+            else:
+                halt_w = args.halt_weight
+            comps = loss_fn(
+                out["logits"], solution, out["halts"],
+                violation_weight=args.violation_weight,
+                halt_weight=halt_w,
+            )
+            total = comps["total"]
         last_ce = float(comps["ce"].item())
         last_violation = float(comps["violation"].item())
         last_halt = float(comps["halt"].item())
@@ -462,12 +486,21 @@ def main():
             last_batch_size = int(full_correct.numel())
             last_batch_puzzle_acc = last_batch_correct / max(last_batch_size, 1)
         loss = total / args.accum_steps
-        loss.backward()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
         accum_count += 1
 
         if accum_count >= args.accum_steps:
+            if scaler is not None:
+                scaler.unscale_(optim)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            optim.step()
+            if scaler is not None:
+                scaler.step(optim)
+                scaler.update()
+            else:
+                optim.step()
             optim.zero_grad(set_to_none=True)
             accum_count = 0
             step += 1
