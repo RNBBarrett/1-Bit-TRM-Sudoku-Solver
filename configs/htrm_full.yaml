@@ -1,0 +1,15 @@
+# Full claude.md spec configuration: ~7M shadow parameters, 4-level recursion.
+#
+# Per-pass compute scales 144x over the POC config (htrm_poc.yaml).
+# Recommended training: 50k+ optimizer steps with curriculum + FP warmup.
+
+vocab_size: 11
+seq_len: 81
+hidden_dim: 384         # POC was 192
+mlp_ratio: 4
+n_layers_per_block: 2   # POC was 1
+K: 16                   # POC was 8
+L: 6                    # POC was 2
+P: 3                    # POC was 1
+T: 3                    # POC was 1
+halt_threshold: 0.99

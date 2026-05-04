@@ -1,0 +1,2 @@
+setting,accuracy,cell_accuracy,valid_grid_rate,avg_macro_loops,avg_micro_loops,tokens_per_sec,n_puzzles,elapsed_s
+config-default,0.0,0.5925925925925926,0.0,8.0,24.0,1416.1482864595596,5,0.2859870000002047

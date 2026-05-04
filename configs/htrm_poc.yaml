@@ -1,0 +1,10 @@
+vocab_size: 11
+seq_len: 81
+hidden_dim: 192
+mlp_ratio: 4
+n_layers_per_block: 1
+K: 8
+L: 2
+P: 1
+T: 1
+halt_threshold: 0.99

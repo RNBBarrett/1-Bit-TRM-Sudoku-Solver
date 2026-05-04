@@ -1,0 +1,15 @@
+# CUDA-only requirements (Linux cloud GPUs).
+# Same as requirements.txt minus torch-directml (Windows/AMD-specific).
+#
+# RunPod's PyTorch templates ship torch already; this list installs only
+# the project's *other* deps. Run with: pip install -r requirements-cuda.txt
+torch>=2.4.0
+numpy>=1.26
+datasets>=4.6
+huggingface_hub>=1.6
+dokusan==0.1.0
+tqdm>=4.67
+pyyaml>=6.0
+rich>=13.0
+tensorboard>=2.16
+pytest>=9.0

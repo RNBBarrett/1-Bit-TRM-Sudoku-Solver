@@ -1,0 +1,11 @@
+torch==2.4.1
+torch-directml==0.2.5.dev240914
+numpy>=1.26
+datasets>=4.6
+huggingface_hub>=1.6
+dokusan==0.1.0
+tqdm>=4.67
+pyyaml>=6.0
+rich>=13.0
+tensorboard>=2.16
+pytest>=9.0
