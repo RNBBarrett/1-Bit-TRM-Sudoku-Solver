@@ -31,7 +31,7 @@ POD_PORT = os.environ.get("POD_PORT", "13278")
 SSH_KEY = os.environ.get("SSH_KEY", str(Path.home() / ".ssh" / "id_ed25519"))
 LOG_PATH = os.environ.get(
     "LOG_PATH",
-    "/workspace/1-Bit-TRM-Sudoku-Solver/runs/cloud_run_v3.log",
+    "/workspace/1-Bit-TRM-Sudoku-Solver/runs/cloud_run_v4.log",
 )
 
 # ----- Cost / budget -----
