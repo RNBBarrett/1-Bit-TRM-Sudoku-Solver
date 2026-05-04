@@ -108,13 +108,19 @@ def evaluate(
 
 
 def curriculum_stage(step: int, max_steps: int) -> tuple[str, dict[int, float]]:
-    """Step-based curriculum: 30% warmup, 30% mixed-1, 30% mixed-2, 10% final."""
+    """Step-based curriculum: 5% warmup, 20% mixed-1, 50% mixed-2, 25% final.
+
+    Compressed warmup (was 30%) prevents the model from cycling through the
+    small Easy tier (~23k Samsung puzzles) too many times and overfitting.
+    Mixed-1 starts at step 2,500 of a 50k run, which is when the rotation of
+    Easy puzzles is starting to repeat enough to stop providing fresh signal.
+    """
     frac = step / max(max_steps, 1)
-    if frac < 0.30:
+    if frac < 0.05:
         return "warmup", {0: 1.0, 1: 0.0, 2: 0.0}
-    if frac < 0.60:
+    if frac < 0.25:
         return "mixed-1", {0: 0.7, 1: 0.3, 2: 0.0}
-    if frac < 0.90:
+    if frac < 0.75:
         return "mixed-2", {0: 0.3, 1: 0.5, 2: 0.2}
     return "final", {0: 1.0, 1: 1.0, 2: 1.0}
 
