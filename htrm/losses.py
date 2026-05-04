@@ -54,12 +54,14 @@ class HTRMLoss(nn.Module):
             is_correct = (preds == target).all(dim=-1).float()  # (B,)
         if halts.numel() > 0:
             target_halt = is_correct.view(B, 1, 1).expand_as(halts)
-            # BCE on sigmoid outputs is unsafe under autocast (fp16/bf16 underflow);
-            # force fp32 here. Cheap because halts is tiny (B x ~144 x 1).
-            halt_loss = F.binary_cross_entropy(
-                halts.float().clamp(1e-6, 1 - 1e-6),
-                target_halt.float(),
-            )
+            # BCE on sigmoid outputs is unsafe under autocast (fp16/bf16 underflow).
+            # Disable autocast and cast inputs to fp32 for this small reduction.
+            device_type = "cuda" if logits.is_cuda else "cpu"
+            with torch.amp.autocast(device_type=device_type, enabled=False):
+                halt_loss = F.binary_cross_entropy(
+                    halts.float().clamp(1e-6, 1 - 1e-6),
+                    target_halt.float(),
+                )
         else:
             halt_loss = torch.zeros((), device=logits.device)
 
