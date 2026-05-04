@@ -108,16 +108,20 @@ def evaluate(
 
 
 def curriculum_stage(step: int, max_steps: int) -> tuple[str, dict[int, float]]:
-    """Step-based curriculum: 5% warmup, 20% mixed-1, 50% mixed-2, 25% final.
+    """Step-based curriculum starting in mixed-1 (no easy-only warmup).
 
-    Compressed warmup (was 30%) prevents the model from cycling through the
-    small Easy tier (~23k Samsung puzzles) too many times and overfitting.
-    Mixed-1 starts at step 2,500 of a 50k run, which is when the rotation of
-    Easy puzzles is starting to repeat enough to stop providing fresh signal.
+    Three earlier runs (v2/v3/v4) all overfit on the small Easy tier
+    (~23k puzzles in Samsung's data) within the first 200-700 steps and
+    then regressed. Skipping the easy-only phase entirely prevents the
+    model from memorizing the small set, while still giving it Easy
+    puzzles (70% weight in mixed-1) for early signal.
+
+    Schedule:
+      - mixed-1: 0-25%  (70% Easy / 30% Medium)
+      - mixed-2: 25-75% (30% Easy / 50% Medium / 20% Extreme)
+      - final:   75%+   (uniform across all tiers)
     """
     frac = step / max(max_steps, 1)
-    if frac < 0.05:
-        return "warmup", {0: 1.0, 1: 0.0, 2: 0.0}
     if frac < 0.25:
         return "mixed-1", {0: 0.7, 1: 0.3, 2: 0.0}
     if frac < 0.75:
