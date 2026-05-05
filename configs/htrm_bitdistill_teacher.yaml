@@ -1,0 +1,22 @@
+# BitDistill Phase A: full-precision teacher.
+#
+# Trained with --no-quant flag so all BitLinear layers run as plain FP32
+# F.linear. Architecture is identical to the v6 student so the teacher's
+# weights serve as a useful initialization signal during distillation.
+#
+# Used as input to the BitDistill Phase B student via --distill-from.
+
+vocab_size: 11
+seq_len: 81
+hidden_dim: 384
+mlp_ratio: 4
+n_layers_per_block: 2
+K: 16
+L: 6
+P: 1
+T: 3
+halt_threshold: 0.99
+samsung_mode: true         # Samsung's exact 3-level recursion (no focus mask, P forced to 1)
+learnable_alpha: false     # not used in FP mode anyway
+use_median_scale: false    # not used in FP mode anyway
+ema_decay: 0.999           # EMA still helps for FP recursive reasoning per TRM

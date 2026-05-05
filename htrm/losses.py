@@ -1,4 +1,4 @@
-"""HTRM training loss: CE + rule-violation penalty + ACT halt loss."""
+"""HTRM training losses: CE + rule-violation penalty + ACT halt + KD distillation."""
 from __future__ import annotations
 
 import torch
@@ -6,6 +6,62 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from htrm.sudoku_rules import soft_group_violation
+
+
+class KDLoss(nn.Module):
+    """Knowledge-distillation loss between teacher and student logits.
+
+    Standard Hinton-style temperature-scaled KL divergence:
+        L_KD = T^2 * KL( softmax(teacher / T) || softmax(student / T) )
+
+    The T^2 multiplier preserves gradient magnitude as T grows (since the
+    softmax gradient scales 1/T; without T^2 the loss vanishes).
+
+    Used for the BitDistill recipe (arXiv 2510.13998) where a frozen FP
+    teacher's soft predictions guide a 1-bit ternary student. Distillation
+    overcomes the "predict empty" basin that traps naive QAT-from-scratch:
+    matching the teacher's digit distributions creates a much larger
+    gradient signal away from any constant trivial output.
+
+    Args:
+        temperature: T in the formula. Higher T = softer distributions =
+            more gradient signal from low-probability classes. BitDistill
+            paper recommends T=5.0.
+    """
+
+    def __init__(self, temperature: float = 5.0):
+        super().__init__()
+        if temperature <= 0:
+            raise ValueError(f"KD temperature must be > 0, got {temperature}")
+        self.T = temperature
+
+    def forward(
+        self,
+        student_logits: torch.Tensor,     # (B, S, V)
+        teacher_logits: torch.Tensor,     # (B, S, V), no_grad
+    ) -> torch.Tensor:
+        if student_logits.shape != teacher_logits.shape:
+            raise ValueError(
+                f"shape mismatch: student {student_logits.shape} vs "
+                f"teacher {teacher_logits.shape}"
+            )
+        T = self.T
+        # Compute KL in fp32 for numerical safety under autocast (KL/log_softmax
+        # have known underflow at low precision when distributions are sharp).
+        device_type = "cuda" if student_logits.is_cuda else "cpu"
+        with torch.amp.autocast(device_type=device_type, enabled=False):
+            s_log_p = F.log_softmax(student_logits.float() / T, dim=-1)
+            t_p = F.softmax(teacher_logits.float() / T, dim=-1)
+            # KLDivLoss expects log-probs as input; reduction='batchmean' divides
+            # by batch size (over leading dim only). We want a scalar per
+            # (cell, batch) average, so use 'batchmean' on flattened 2D logits.
+            kl = F.kl_div(
+                s_log_p.reshape(-1, s_log_p.shape[-1]),
+                t_p.reshape(-1, t_p.shape[-1]),
+                reduction="batchmean",
+                log_target=False,
+            )
+        return T * T * kl
 
 
 class HTRMLoss(nn.Module):

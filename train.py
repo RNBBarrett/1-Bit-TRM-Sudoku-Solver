@@ -187,6 +187,20 @@ def main():
                     help="disable curriculum even on tagged datasets")
     ap.add_argument("--resume", type=str, default=None,
                     help="path to a checkpoint .pt to resume from (loads model + optimizer + step)")
+    # ---- BitDistill flags ----
+    ap.add_argument("--no-quant", action="store_true",
+                    help="run model in pure FP32 mode (no BitNet quantization). "
+                         "Used for training the FP teacher in the BitDistill recipe.")
+    ap.add_argument("--distill-from", type=str, default=None,
+                    help="path to a frozen teacher checkpoint to distill from. "
+                         "Adds KD loss between student and teacher logits.")
+    ap.add_argument("--kd-weight", type=float, default=10.0,
+                    help="weight on the KD loss (BitDistill recommends 10x).")
+    ap.add_argument("--kd-temperature", type=float, default=5.0,
+                    help="softmax temperature for KD (BitDistill recommends T=5).")
+    ap.add_argument("--ce-weight", type=float, default=0.1,
+                    help="weight on the CE-against-labels loss when distilling. "
+                         "BitDistill paper uses 0.1 (KD dominates).")
     args = ap.parse_args()
 
     out_dir = Path(args.out)
@@ -334,8 +348,11 @@ def main():
                 log = json.load(f)
         print(f"  resumed at step {step}, best_val={best_val:.4f}")
 
-    # Set BitNet quantization state based on (possibly resumed) step.
-    if args.quantize_after_step >= 0:
+    # ---- BitDistill: pure-FP teacher mode (overrides quantize-after-step) ----
+    if args.no_quant:
+        set_quantization_enabled(model, enabled=False)
+        print("--no-quant: BitNet quantization permanently DISABLED (FP teacher mode)")
+    elif args.quantize_after_step >= 0:
         if step >= args.quantize_after_step:
             set_quantization_enabled(model, enabled=True)
             print(f"FP warmup complete (step {step} >= {args.quantize_after_step}); quantization ENABLED")
@@ -344,6 +361,29 @@ def main():
             print(f"FP warmup ON: quantization will enable at step {args.quantize_after_step}")
     else:
         print("FP warmup OFF: quantization enabled from step 0")
+
+    # ---- BitDistill: load frozen teacher if distilling ----
+    teacher_model = None
+    kd_loss_fn = None
+    if args.distill_from is not None:
+        from htrm.losses import KDLoss
+        print(f"BitDistill: loading frozen teacher from {args.distill_from}")
+        t_blob = torch.load(Path(args.distill_from), map_location="cpu", weights_only=False)
+        t_cfg_dict = t_blob.get("cfg", cfg.to_dict())
+        teacher_cfg = HTRMConfig(**t_cfg_dict)
+        # Teacher is forced into FP mode regardless of its training config:
+        # the saved weights are the master FP weights, and we want the cleanest
+        # soft-target distribution at inference. Disable BitNet on teacher.
+        teacher_model = HTRM(teacher_cfg)
+        teacher_model.load_state_dict(t_blob["model_state"])
+        teacher_model = teacher_model.to(device)
+        set_quantization_enabled(teacher_model, enabled=False)
+        teacher_model.eval()
+        for p in teacher_model.parameters():
+            p.requires_grad = False
+        kd_loss_fn = KDLoss(temperature=args.kd_temperature).to(device)
+        print(f"  teacher params: {sum(p.numel() for p in teacher_model.parameters()):,}")
+        print(f"  KD weight: {args.kd_weight}, CE weight: {args.ce_weight}, T: {args.kd_temperature}")
     current_stage_name = "(uninit)"
     train_iter = None
     train_loader = None
@@ -597,7 +637,28 @@ def main():
                 violation_weight=violation_w,
                 halt_weight=halt_w,
             )
-            total = comps["total"]
+            # ---- BitDistill: add KD loss against frozen teacher ----
+            if teacher_model is not None and kd_loss_fn is not None:
+                with torch.no_grad():
+                    t_out = teacher_model(
+                        puzzle, training=False,
+                        gradient_checkpoint=False, lambda_q=1.0,
+                    )
+                kd = kd_loss_fn(out["logits"], t_out["logits"])
+                # BitDistill recipe: 0.1*CE + 10*KD + small violation/halt
+                total = (
+                    args.ce_weight * comps["ce"]
+                    + args.kd_weight * kd
+                    + violation_w * comps["violation"]
+                    + halt_w * comps["halt"]
+                )
+                comps = {
+                    **comps,
+                    "kd": kd,
+                    "total": total,
+                }
+            else:
+                total = comps["total"]
         last_ce = float(comps["ce"].item())
         last_violation = float(comps["violation"].item())
         last_halt = float(comps["halt"].item())

@@ -1,0 +1,25 @@
+# BitDistill Phase B: 1-bit ternary student.
+#
+# Architecturally identical to v6 (full BitNet b1.58 stabilization recipe:
+# learnable alpha, median scale, lambda ramp, EMA). The new ingredient is
+# the KD loss against a frozen FP teacher (passed via --distill-from).
+#
+# Distillation rationale: the teacher's soft probability distributions
+# over digits 1-9 give the student a much stronger signal than hard CE
+# labels alone. This overcomes the "predict empty" basin that trapped
+# v2-v6 once full ternary engaged.
+
+vocab_size: 11
+seq_len: 81
+hidden_dim: 384
+mlp_ratio: 4
+n_layers_per_block: 2
+K: 16
+L: 6
+P: 1
+T: 3
+halt_threshold: 0.99
+samsung_mode: true
+learnable_alpha: true
+use_median_scale: true
+ema_decay: 0.999
