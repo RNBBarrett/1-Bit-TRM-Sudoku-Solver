@@ -1,0 +1,21 @@
+# Samsung TRM recursion structure + BitNet b1.58 quantization.
+#
+# Goal: isolate whether the BitNet quantization is the source of training
+# instability we saw in v2-v5, by exactly matching Samsung's known-good
+# 3-level recursion (T x K x (1 + L) = 3 x 16 x 7 = 336 inner passes) and
+# disabling the focus-mask + Strategist-sub-recursion that are our
+# additions on top of Samsung's design.
+#
+# Same model dims as full spec (~6M params).
+
+vocab_size: 11
+seq_len: 81
+hidden_dim: 384
+mlp_ratio: 4
+n_layers_per_block: 2
+K: 16
+L: 6
+P: 1                    # ignored when samsung_mode=true (forced to 1)
+T: 3
+halt_threshold: 0.99
+samsung_mode: true      # disables focus mask, P forced to 1

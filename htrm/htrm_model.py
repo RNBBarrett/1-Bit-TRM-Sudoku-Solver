@@ -59,13 +59,23 @@ class HTRM(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """One macro cycle: P Strategist sub-steps, emit, L Tactician steps, halt-conf.
 
+        In samsung_mode, P is forced to 1 and the focus mask is replaced
+        by all-ones (Tactician update is unrestricted) so the recursion
+        structure matches Samsung's TRM: T x K x (1 + L) inner passes,
+        no focus-mask gating. Used to isolate the BitNet quantization
+        as the only delta from Samsung's known-good architecture.
+
         Extracted as a method so `torch.utils.checkpoint.checkpoint` can
         wrap it during training to trade compute for activation memory.
         """
+        if self.cfg.samsung_mode:
+            P = 1
         s = z
         for _ in range(P):
             s = self.strategist.inner(x, y, s)
         z, focus_mask = self.strategist.emit(s)
+        if self.cfg.samsung_mode:
+            focus_mask = torch.ones_like(focus_mask)
         for _ in range(L):
             y = self.tactician(x, y, z, focus_mask)
         conf = self.halt_head(y)

@@ -20,6 +20,11 @@ class HTRMConfig:
     P: int = 1                  # Strategist sub-recursion steps per macro
     T: int = 1                  # outer recursive passes
     halt_threshold: float = 0.99
+    samsung_mode: bool = False  # if True, disable focus mask (Tactician unrestricted)
+                                # and force P=1; matches Samsung TRM's exact 3-level recursion
+                                # while keeping BitNet quantization. Used to isolate whether
+                                # the focus-mask + sub-recursion are the source of training
+                                # instability vs the 1-bit quantization itself.
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "HTRMConfig":
