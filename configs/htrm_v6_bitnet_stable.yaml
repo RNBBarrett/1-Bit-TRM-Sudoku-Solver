@@ -1,0 +1,32 @@
+# v6 BitNet stabilization config.
+#
+# Combines Samsung TRM's exact recursion (samsung_mode=true, P=1, no
+# focus mask) with three small-model stabilization tricks identified
+# by literature review (HF 1.58bit blog, BitNet Reloaded, TTQ):
+#
+#   - learnable_alpha=true   : per-layer learnable weight scale (TTQ)
+#   - use_median_scale=true  : median (not mean) for weight scale init,
+#                              recommended for sub-100M-param ternary models
+#                              (BitNet Reloaded, arXiv 2407.09527)
+#   - ema_decay=0.999        : EMA over FP master weights for evaluation,
+#                              TRM reports 79.9% -> 87.4% accuracy gain
+#                              from this alone
+#
+# The TRAINING SCHEDULE flags (FP warmup, lambda ramp, LR warmup, WD drop,
+# violation ramp) are passed via CLI in the v6 launch command, not via
+# this file -- they're training hyperparameters, not architecture.
+
+vocab_size: 11
+seq_len: 81
+hidden_dim: 384            # same as full spec; widening to 576 is a fallback
+mlp_ratio: 4
+n_layers_per_block: 2
+K: 16
+L: 6
+P: 1                       # ignored when samsung_mode=true (forced to 1)
+T: 3
+halt_threshold: 0.99
+samsung_mode: true         # Samsung's exact 3-level recursion, no focus mask
+learnable_alpha: true      # per-layer learnable scalar alpha (TTQ)
+use_median_scale: true     # data-driven alpha init from median (BitNet Reloaded)
+ema_decay: 0.999           # EMA over FP master weights (TRM)

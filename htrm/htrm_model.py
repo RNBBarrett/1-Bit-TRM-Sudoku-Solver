@@ -40,10 +40,14 @@ class HTRM(nn.Module):
         self.y_init = nn.Parameter(torch.zeros(1, cfg.seq_len, H))
         self.z_init = nn.Parameter(torch.zeros(1, cfg.seq_len, H))
 
-        self.strategist = Strategist(H, cfg.mlp_ratio, cfg.n_layers_per_block)
-        self.tactician = Tactician(H, cfg.mlp_ratio, cfg.n_layers_per_block)
-        self.halt_head = HaltingHead(H)
-        self.out_head = BitLinear(H, cfg.vocab_size)
+        bl_kwargs = {
+            "learnable_alpha": cfg.learnable_alpha,
+            "use_median": cfg.use_median_scale,
+        }
+        self.strategist = Strategist(H, cfg.mlp_ratio, cfg.n_layers_per_block, **bl_kwargs)
+        self.tactician = Tactician(H, cfg.mlp_ratio, cfg.n_layers_per_block, **bl_kwargs)
+        self.halt_head = HaltingHead(H, **bl_kwargs)
+        self.out_head = BitLinear(H, cfg.vocab_size, **bl_kwargs)
 
         # Reasonable inits: small positional + zero stream initializers.
         nn.init.normal_(self.pos_embed, std=0.02)
@@ -56,29 +60,29 @@ class HTRM(nn.Module):
         z: torch.Tensor,
         P: int,
         L: int,
+        lambda_q: float = 1.0,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """One macro cycle: P Strategist sub-steps, emit, L Tactician steps, halt-conf.
 
-        In samsung_mode, P is forced to 1 and the focus mask is replaced
-        by all-ones (Tactician update is unrestricted) so the recursion
-        structure matches Samsung's TRM: T x K x (1 + L) inner passes,
-        no focus-mask gating. Used to isolate the BitNet quantization
-        as the only delta from Samsung's known-good architecture.
+        `lambda_q` is the quantization-ramp factor (1.0 = full ternary,
+        0.0 = pure FP). Threaded through every BitLinear call so the
+        whole forward smoothly interpolates per the HF 1.58bit recipe.
 
-        Extracted as a method so `torch.utils.checkpoint.checkpoint` can
-        wrap it during training to trade compute for activation memory.
+        In samsung_mode, P is forced to 1 and the focus mask is replaced
+        by all-ones. Extracted as a method so gradient checkpointing can
+        wrap it.
         """
         if self.cfg.samsung_mode:
             P = 1
         s = z
         for _ in range(P):
-            s = self.strategist.inner(x, y, s)
-        z, focus_mask = self.strategist.emit(s)
+            s = self.strategist.inner(x, y, s, lambda_q=lambda_q)
+        z, focus_mask = self.strategist.emit(s, lambda_q=lambda_q)
         if self.cfg.samsung_mode:
             focus_mask = torch.ones_like(focus_mask)
         for _ in range(L):
-            y = self.tactician(x, y, z, focus_mask)
-        conf = self.halt_head(y)
+            y = self.tactician(x, y, z, focus_mask, lambda_q=lambda_q)
+        conf = self.halt_head(y, lambda_q=lambda_q)
         return y, z, conf
 
     def forward(
@@ -88,6 +92,7 @@ class HTRM(nn.Module):
         max_macro: int | None = None,
         max_micro: int | None = None,
         gradient_checkpoint: bool = False,
+        lambda_q: float = 1.0,
     ) -> dict[str, torch.Tensor | int | list[torch.Tensor]]:
         cfg = self.cfg
         K = max_macro if max_macro is not None else cfg.K
@@ -115,11 +120,11 @@ class HTRM(nn.Module):
                     if gradient_checkpoint and torch.is_grad_enabled():
                         from torch.utils.checkpoint import checkpoint
                         y, z, conf = checkpoint(
-                            self._macro_cycle, x, y, z, P, L,
+                            self._macro_cycle, x, y, z, P, L, lambda_q,
                             use_reentrant=False,
                         )
                     else:
-                        y, z, conf = self._macro_cycle(x, y, z, P, L)
+                        y, z, conf = self._macro_cycle(x, y, z, P, L, lambda_q=lambda_q)
                     macro_used += 1
                     micro_used += P + L
                     halts.append(conf)
@@ -129,7 +134,7 @@ class HTRM(nn.Module):
             if halted:
                 break
 
-        logits = self.out_head(y)
+        logits = self.out_head(y, lambda_q=lambda_q)
 
         return {
             "logits": logits,

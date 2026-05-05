@@ -70,7 +70,7 @@ def test_inference_halts_early_when_confidence_high():
     model = HTRM(cfg).eval()
     # Replace halting head with a hook that always returns 1.0
     original_forward = model.halt_head.forward
-    model.halt_head.forward = lambda y: torch.ones(y.shape[0], 1)  # type: ignore
+    model.halt_head.forward = lambda y, lambda_q=1.0: torch.ones(y.shape[0], 1)  # type: ignore
     tokens = torch.randint(0, cfg.vocab_size, (1, cfg.seq_len))
     out = model(tokens, training=False)
     # With halt threshold 0.99 and conf == 1.0, the loop should stop on the

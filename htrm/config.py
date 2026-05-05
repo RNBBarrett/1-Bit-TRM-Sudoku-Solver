@@ -25,6 +25,16 @@ class HTRMConfig:
                                 # while keeping BitNet quantization. Used to isolate whether
                                 # the focus-mask + sub-recursion are the source of training
                                 # instability vs the 1-bit quantization itself.
+    # ---- v6 BitNet stabilization options ----
+    learnable_alpha: bool = False     # if True, BitLinear stores a learnable scalar alpha
+                                      # per layer instead of recomputing 1/(W.abs().mean())
+                                      # each forward (TTQ-style)
+    use_median_scale: bool = False    # if True, BitLinear initializes alpha from
+                                      # 1/(W.abs().median()+eps) (BitNet Reloaded recommendation
+                                      # for sub-100M-param models) instead of mean
+    ema_decay: float = 0.0            # if > 0 (e.g. 0.999), train.py maintains an EMA copy of
+                                      # FP master weights and evaluates from it (TRM reports
+                                      # 79.9% -> 87.4% accuracy gain from this alone)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "HTRMConfig":

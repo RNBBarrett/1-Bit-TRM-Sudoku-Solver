@@ -162,6 +162,26 @@ def main():
     ap.add_argument("--quantize-after-step", type=int, default=-1,
                     help="step at which to enable BitNet quantization "
                          "(default: -1 = enabled from step 0; recommended 20%% of max-steps)")
+    ap.add_argument("--lambda-ramp-steps", type=int, default=0,
+                    help="v6: linearly ramp lambda_q from 0 to 1 over this many steps "
+                         "after quantize-after-step (HF 1.58bit recipe). 0 = no ramp.")
+    ap.add_argument("--violation-min-weight", type=float, default=0.1,
+                    help="v6: starting violation weight during Stage C. Linearly ramps to "
+                         "--violation-weight by --violation-ramp-end-step.")
+    ap.add_argument("--violation-ramp-end-step", type=int, default=-1,
+                    help="v6: step at which violation weight reaches --violation-weight. "
+                         "Default -1 = no ramp (use --violation-weight from step 0).")
+    ap.add_argument("--wd-stage-c-step", type=int, default=-1,
+                    help="v6: step at which weight_decay drops to 0 (BitNet 2B4T recipe). "
+                         "Default -1 = constant weight_decay throughout.")
+    ap.add_argument("--lr-warmup-steps", type=int, default=0,
+                    help="v6: linear LR warmup from 0 to --lr over this many steps.")
+    ap.add_argument("--lr-cosine-end-step", type=int, default=-1,
+                    help="v6: step at which cosine LR decay reaches lr/100. "
+                         "Default -1 = no cosine decay.")
+    ap.add_argument("--lr-cooldown-after-lambda", type=int, default=0,
+                    help="v6: drop LR to lr/10 for this many steps right after lambda hits 1.0 "
+                         "(absorb the documented loss spike at lambda->1).")
     ap.add_argument("--gradient-checkpoint", action="store_true")
     ap.add_argument("--no-curriculum", action="store_true",
                     help="disable curriculum even on tagged datasets")
@@ -199,7 +219,83 @@ def main():
     print(f"model params: {n_params:,}")
 
     loss_fn = HTRMLoss(violation_weight=args.violation_weight, halt_weight=1.0).to(device)
-    optim = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optim = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.lr,
+        betas=(0.9, 0.95),  # TRM/BitNet 2B4T recipe (lower beta2 helps reasoning + QAT noise)
+        weight_decay=args.weight_decay,
+    )
+
+    # ---- v6: schedule helpers (lambda_q, LR, WD, violation) ----
+    import math
+
+    quant_start = max(0, args.quantize_after_step) if args.quantize_after_step >= 0 else 0
+    lambda_ramp_end = quant_start + max(0, args.lambda_ramp_steps)
+
+    def compute_lambda_q(step: int) -> float:
+        """Lambda schedule: 0 during FP warmup, ramps 0->1, then 1.0 forever."""
+        if args.quantize_after_step < 0:
+            return 1.0
+        if step < quant_start:
+            return 0.0
+        if args.lambda_ramp_steps <= 0:
+            return 1.0
+        if step >= lambda_ramp_end:
+            return 1.0
+        return (step - quant_start) / args.lambda_ramp_steps
+
+    def compute_lr_multiplier(step: int) -> float:
+        """LR multiplier: warmup -> cosine -> 0.01, with optional post-lambda cooldown."""
+        # Linear warmup from 0 to 1 over args.lr_warmup_steps.
+        if args.lr_warmup_steps > 0 and step < args.lr_warmup_steps:
+            return step / args.lr_warmup_steps
+        # Post-lambda cooldown: drop to 0.1x for N steps right after lambda hits 1.
+        cooldown = args.lr_cooldown_after_lambda
+        if cooldown > 0 and lambda_ramp_end <= step < lambda_ramp_end + cooldown:
+            return 0.1
+        # Cosine decay to 0.01 if requested.
+        if args.lr_cosine_end_step > 0:
+            anchor = max(args.lr_warmup_steps, lambda_ramp_end + args.lr_cooldown_after_lambda)
+            if step <= anchor:
+                return 1.0
+            if step >= args.lr_cosine_end_step:
+                return 0.01
+            progress = (step - anchor) / max(args.lr_cosine_end_step - anchor, 1)
+            return 0.01 + 0.5 * (1 - 0.01) * (1 + math.cos(math.pi * progress))
+        return 1.0
+
+    def compute_violation_weight(step: int) -> float:
+        """Violation-loss weight ramp: 0.1 (or args.violation_min_weight) at Stage C
+        start, ramping to args.violation_weight by violation_ramp_end_step."""
+        if args.violation_ramp_end_step <= 0:
+            return args.violation_weight
+        ramp_start = lambda_ramp_end
+        if step <= ramp_start:
+            return args.violation_min_weight
+        if step >= args.violation_ramp_end_step:
+            return args.violation_weight
+        progress = (step - ramp_start) / max(args.violation_ramp_end_step - ramp_start, 1)
+        return args.violation_min_weight + progress * (args.violation_weight - args.violation_min_weight)
+
+    def maybe_apply_wd_drop(step: int) -> None:
+        """At wd_stage_c_step, drop weight_decay to 0 (BitNet 2B4T two-stage WD)."""
+        if args.wd_stage_c_step <= 0:
+            return
+        if step == args.wd_stage_c_step:
+            for pg in optim.param_groups:
+                pg["weight_decay"] = 0.0
+            print(f"  >>> step {step}: weight_decay dropped to 0.0 (Stage C) <<<")
+
+    # ---- v6: EMA tracker (TRM reports 79.9% -> 87.4% from this alone) ----
+    ema_model = None
+    if cfg.ema_decay > 0:
+        from torch.optim.swa_utils import AveragedModel
+        ema_decay = cfg.ema_decay
+        ema_model = AveragedModel(
+            model,
+            avg_fn=lambda avg, p, n: ema_decay * avg + (1.0 - ema_decay) * p,
+        )
+        print(f"EMA active: decay={ema_decay} (eval will use EMA weights)")
 
     # Mixed-precision autocast setup. bf16 is preferred on Ampere/Ada/Hopper
     # GPUs because it doesn't need a GradScaler (wider exponent range than fp16).
@@ -291,6 +387,9 @@ def main():
     last_violation = float("nan")
     last_halt = float("nan")
     last_halt_w = 0.0
+    last_lambda_q = 0.0
+    last_violation_w = args.violation_weight
+    last_lr = args.lr
 
     # Reference baselines for the current dataset. Random over the full
     # vocab is log(V); the "copy clues + uniform digit guess on blanks"
@@ -389,16 +488,22 @@ def main():
                 "model is being trained to halt only when confident."
             )
 
-        # ----- Quantization phase -----
+        # ----- Quantization phase (v6: includes lambda-ramp tracking) -----
         if args.quantize_after_step >= 0 and step < args.quantize_after_step:
             quant_line = (
-                f"Currently using full-precision weights "
-                f"(1-bit BitNet quantization will engage at step {args.quantize_after_step})"
+                f"Stage A: full-precision warmup (BitNet ternary engages at step "
+                f"{args.quantize_after_step}; currently in pure FP)"
+            )
+        elif args.lambda_ramp_steps > 0 and last_lambda_q < 1.0:
+            quant_line = (
+                f"Stage B: lambda ramp at {last_lambda_q*100:.0f}% (smoothly mixing in "
+                f"BitNet ternary; weights = {last_lambda_q:.3f}*ternary + "
+                f"{1-last_lambda_q:.3f}*FP)"
             )
         else:
             quant_line = (
-                "Using 1-bit BitNet quantization -- model weights are constrained to {-1, 0, +1} "
-                "for the published 1.4MB-deployable footprint"
+                f"Stage C: full BitNet b1.58 ternary (violation_w={last_violation_w:.2f}, "
+                f"lr={last_lr:.2e})"
             )
 
         # ----- ETA in friendly units -----
@@ -470,8 +575,18 @@ def main():
             ac_ctx = torch.amp.autocast(autocast_device, dtype=autocast_dtype)
         else:
             ac_ctx = nullcontext()
+        # v6 schedules computed per optimizer step.
+        lambda_q = compute_lambda_q(step)
+        violation_w = compute_violation_weight(step)
+        last_lambda_q = lambda_q
+        last_violation_w = violation_w
         with ac_ctx:
-            out = model(puzzle, training=True, gradient_checkpoint=args.gradient_checkpoint)
+            out = model(
+                puzzle,
+                training=True,
+                gradient_checkpoint=args.gradient_checkpoint,
+                lambda_q=lambda_q,
+            )
             # Halt-loss weight ramp 0 -> args.halt_weight over args.halt_ramp_steps.
             if args.halt_ramp_steps > 0:
                 halt_w = min(step / args.halt_ramp_steps, 1.0) * args.halt_weight
@@ -479,7 +594,7 @@ def main():
                 halt_w = args.halt_weight
             comps = loss_fn(
                 out["logits"], solution, out["halts"],
-                violation_weight=args.violation_weight,
+                violation_weight=violation_w,
                 halt_weight=halt_w,
             )
             total = comps["total"]
@@ -503,6 +618,11 @@ def main():
         accum_count += 1
 
         if accum_count >= args.accum_steps:
+            # v6: apply LR multiplier (warmup + cosine + lambda-arrival cooldown).
+            lr_mult = compute_lr_multiplier(step)
+            for pg in optim.param_groups:
+                pg["lr"] = args.lr * lr_mult
+            last_lr = args.lr * lr_mult
             if scaler is not None:
                 scaler.unscale_(optim)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -514,6 +634,10 @@ def main():
             optim.zero_grad(set_to_none=True)
             accum_count = 0
             step += 1
+            # v6: WD drop at Stage C boundary, EMA update.
+            maybe_apply_wd_drop(step)
+            if ema_model is not None:
+                ema_model.update_parameters(model)
 
             # Wall-clock time-budget exit. Saves a checkpoint and returns
             # cleanly so the run can be resumed via --resume.
@@ -546,7 +670,9 @@ def main():
                 })
 
             if step % args.eval_every == 0:
-                metrics = evaluate(model, val_loader, device, has_difficulty)
+                # v6: evaluate from EMA copy when active (TRM recipe).
+                eval_target = ema_model.module if ema_model is not None else model
+                metrics = evaluate(eval_target, val_loader, device, has_difficulty)
                 meta = " ".join(f"{k}={v:.4f}" for k, v in metrics.items())
                 print(f"  eval@{step}: {meta}")
                 log.append({"step": step, "eval": metrics})
@@ -567,7 +693,8 @@ def main():
         print(f"resume with: --resume {out_dir / 'last.pt'}")
         return
 
-    metrics = evaluate(model, val_loader, device, has_difficulty)
+    eval_target = ema_model.module if ema_model is not None else model
+    metrics = evaluate(eval_target, val_loader, device, has_difficulty)
     print(f"final eval: {metrics}")
     save_resumable_checkpoint(out_dir / "final.pt", step, model, optim, cfg, log, metrics=metrics)
     print(f"wrote checkpoint + log to {out_dir}")
