@@ -26,12 +26,12 @@ import time
 from pathlib import Path
 
 # ----- Pod connection (override via env vars if you redeploy) -----
-POD_IP = os.environ.get("POD_IP", "103.196.86.195")
-POD_PORT = os.environ.get("POD_PORT", "19369")
+POD_IP = os.environ.get("POD_IP", "103.196.86.82")
+POD_PORT = os.environ.get("POD_PORT", "42367")
 SSH_KEY = os.environ.get("SSH_KEY", str(Path.home() / ".ssh" / "id_ed25519"))
 LOG_PATH = os.environ.get(
     "LOG_PATH",
-    "/workspace/1-Bit-TRM-Sudoku-Solver/runs/samsung_v1.log",
+    "/workspace/1-Bit-TRM-Sudoku-Solver/runs/samsung_v6.log",
 )
 
 # ----- Cost / budget -----
