@@ -21,8 +21,112 @@ Recursive reasoning has emerged as a way for tiny models to punch above their we
 If 1-bit recursive reasoning works, you get:
 
 - **~16× smaller deployed footprint** than FP TRM (1.4 MB vs ~28 MB)
-- **Hardware-friendly inference** — ternary multiply-accumulate is just signed addition
+- **Hardware-friendly inference** — ternary multiply-accumulate is just signed addition (no FP multiplier needed)
 - A path toward microcontroller-class deployment of nontrivial reasoning workloads
+- A teacher-distill-to-edge pattern: train a strong FP model in cloud, ship a tiny ternary student to constrained devices
+
+## Real-world applications
+
+Sudoku is just the proving ground. The architecture pattern — **iterative reasoning over a fixed-size problem with hard constraints** — generalizes to a broad class of high-value commercial problems where compute, power, memory, or latency are scarce.
+
+### Cybersecurity — edge & constrained-device threat detection
+
+Most production threat detection runs in cloud-scale data lakes. The hard problems are at the **edge**: ICS/SCADA controllers, IoT devices, network appliances, smart-grid endpoints, payment terminals. These have <50 MB free RAM and aggressive latency budgets. A 1.4 MB ternary reasoner fits comfortably.
+
+| Problem | Why this fits |
+|---|---|
+| **ICS/SCADA protocol anomaly detection** | Industrial controllers with kilobytes of RAM; ternary inference works on FPGAs without FP units |
+| **IoT device-side malware classification** | Byte-pattern reasoning over 81-cell-equivalent feature grids; iterative refinement handles obfuscated samples |
+| **DNS tunneling / C2 beacon detection** | Constraint structure: temporal patterns + payload entropy + destination distribution must satisfy benign profiles |
+| **Behavioral biometrics on mobile** | Privacy-preserving on-device inference; ternary keeps power draw negligible during continuous auth |
+| **Side-channel signal analysis** | Embedded probes on hardware; full reasoning on the probe itself, no exfil to cloud |
+| **Smart-contract vulnerability detection** | Bytecode = grid; iterative refinement maps natively to constraint violation search |
+
+### Medicine & healthcare — wearables, point-of-care, low-resource settings
+
+Medical AI lives or dies by deployability. A 1.4 MB model runs on any wearable's MCU and any smartphone without quantization effort.
+
+| Problem | Why this fits |
+|---|---|
+| **ECG arrhythmia detection on smartwatches** | Continuous on-device inference at <1 mW power budget; iterative refinement reduces false positives in noisy signals |
+| **Continuous glucose monitor pattern analysis** | Predict hypo/hyperglycemic events from glucose-curve constraints; deploy on the patch itself |
+| **Sleep stage classification** | Multi-channel EEG/HR/movement on the wearable, no phone roundtrip needed |
+| **Drug-drug interaction reasoning** | Constraint-satisfaction over patient meds, conditions, and pharmacology rules; runs at point of dispensing without internet |
+| **Clinical triage in low-resource clinics** | No connectivity, no GPU; fits on a $30 Android phone, gives differential-diagnosis suggestions |
+| **Pathology slide pattern recognition (offline)** | Field-deployed cancer screening in regions without lab access |
+| **Surgical tumor margin detection** | Real-time iterative inference on the tool itself, sub-100ms latency from probe to surgeon's display |
+
+### Industrial & manufacturing — predictive maintenance, defect detection
+
+Predictive maintenance is a $30B+ market. The expensive part is putting AI compute *next to the machine*. Ternary inference on an FPGA cuts cost-per-deployment by 100× vs an NVIDIA edge box.
+
+| Problem | Why this fits |
+|---|---|
+| **Vibration/audio fault detection** | 1-second windows of sensor data → 81-cell-equivalent grids; iterative reasoning improves classification under sensor drift |
+| **Edge camera defect inspection** | $5 ARM Cortex-M chips run the whole inference pipeline; no GPU, no cloud, no factory-floor network dependency |
+| **Energy grid anomaly detection** | Substations have hard memory limits; ternary fits in existing PLCs |
+| **Predictive maintenance on rotating equipment** | Constraint-satisfaction reasoning over (vibration spectrum, temp, rpm, load) → fault class |
+| **Robotic constraint planning** | Industrial robots solving placement/routing problems on-arm without offloading |
+
+### Science & research instruments — field deployment, satellite onboard, lab instrumentation
+
+Science instruments often run in environments where every gram and watt matters: satellites, deep-ocean probes, remote weather stations, polar research huts.
+
+| Problem | Why this fits |
+|---|---|
+| **Satellite onboard event classification** | Selective downlink: classify cosmic-ray events, solar flares, atmospheric anomalies before transmitting; saves bandwidth and power |
+| **Mars rover anomaly screening** | One-way trip latency forces edge intelligence; ternary fits within the rover's existing rad-hard compute budget |
+| **Spectroscopy classification on portable devices** | Field mineral identification, food authentication, drug verification — ternary fits in handheld scanners |
+| **Particle physics event reconstruction triggers** | Detector-side filtering at TByte/sec throughput; ternary lookup is 100× faster than FP |
+| **Climate model bias correction at field stations** | Solar-powered weather stations with battery constraints |
+| **Wildlife conservation: trail-cam species ID** | Years of battery life on a tree-mounted camera; ternary keeps wakeup latency low |
+| **Oceanographic underwater autonomy** | No wireless comms; AUVs reason about navigation/sample-collection on their own power budget |
+
+### Defense & aerospace — battlefield edge AI, autonomy, comms-denied operation
+
+Defense AI has the most extreme deployability constraints: must work without comms, against active jamming, on cheap expendable platforms.
+
+| Problem | Why this fits |
+|---|---|
+| **Drone navigation in GPS-denied environments** | Visual-SLAM reasoning runs on the drone's MCU; no datalink to base required |
+| **Satellite proximity operations** | Onboard collision-avoidance reasoning where ground-station roundtrip is fatal |
+| **Acoustic threat classification** | Sonobuoys with multi-month battery life; ternary inference is essentially free vs the radio |
+| **Counter-UAS classification** | Edge-deployed reasoning on radar feeds for low-cost drone defense |
+
+### Logistics & operations research — constraint-heavy, latency-sensitive
+
+The "constraint satisfaction" pattern that wins at Sudoku also wins at logistics. Once trained as a teacher, a 1-bit student inference engine fits inside a delivery driver's phone, a forklift's controller, a port crane's PLC.
+
+| Problem | Why this fits |
+|---|---|
+| **Vehicle routing in real time** | Driver phone re-plans routes after each delivery without server roundtrip |
+| **Port/yard container placement** | Constraint-satisfaction over crane reach + truck schedule + cargo priority |
+| **Shift scheduling at small businesses** | $50 wall-mounted device replaces $50K enterprise scheduling software |
+| **Warehouse robot pick-and-place** | Per-robot reasoning, no swarm-coordination latency penalty |
+
+### Finance — colocation latency, fraud detection at the edge
+
+| Problem | Why this fits |
+|---|---|
+| **Payment terminal fraud detection** | Card readers with embedded chips: classify transaction patterns at point-of-swipe |
+| **Algorithmic trading prefilters** | Microsecond decisions; ternary multiply on FPGA is sub-nanosecond |
+| **AML pattern recognition at branch ATMs** | Local intelligence reduces false escalations to central monitoring |
+
+### Why our specific approach unlocks these
+
+Three properties combine:
+
+1. **Tiny footprint (~1.4 MB)** — fits in flash on the smallest edge hardware (Cortex-M4 class).
+2. **No FP multiplier required** — ternary multiply is signed addition, so you don't need a hardware FPU. Standard MCUs and existing FPGAs run it directly.
+3. **Distillation pattern** — train the strong teacher in the cloud (where compute is cheap and abundant), deploy the ternary student to thousands or millions of constrained edge devices. This is a **deployment economic** that's hard to match with traditional FP models.
+
+The key research bet of this project is that recursive reasoning specifically — not just classification — is preserved through aggressive quantization when KD is the training signal. If that bet pays off, every domain above gets a new tool.
+
+### Caveats
+
+- **Sudoku is a constraint-satisfaction toy.** Translating to a real domain requires retraining: build a teacher on the target task's data, distill into a 1-bit student. The architecture transfers; the dataset doesn't.
+- **Recursive reasoning specifically helps when iterative refinement helps.** For pure pattern classification (e.g., simple image labels), simpler architectures may suffice and our recursion overhead isn't worth it.
+- **No hardware deployment validated yet.** Theoretical fit on FPGAs/MCUs is clear from the bit-level structure; we haven't actually flashed firmware. That's a Phase 2 engineering effort per domain.
 
 ## Current results (training ongoing)
 
