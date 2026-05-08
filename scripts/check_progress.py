@@ -26,12 +26,12 @@ import time
 from pathlib import Path
 
 # ----- Pod connection (override via env vars if you redeploy) -----
-POD_IP = os.environ.get("POD_IP", "103.196.86.82")
-POD_PORT = os.environ.get("POD_PORT", "42367")
+POD_IP = os.environ.get("POD_IP", "103.196.86.144")
+POD_PORT = os.environ.get("POD_PORT", "51734")
 SSH_KEY = os.environ.get("SSH_KEY", str(Path.home() / ".ssh" / "id_ed25519"))
 LOG_PATH = os.environ.get(
     "LOG_PATH",
-    "/workspace/1-Bit-TRM-Sudoku-Solver/runs/samsung_v6.log",
+    "/workspace/1-Bit-TRM-Sudoku-Solver/runs/teacher.log",
 )
 
 # ----- Cost / budget -----
@@ -39,7 +39,7 @@ COST_PER_HOUR = float(os.environ.get("POD_COST_PER_HR", "0.69"))
 BUDGET = float(os.environ.get("BUDGET", "20.00"))
 # Wall-clock auto-stop (matches the --hours flag passed to train.py).
 # Training will gracefully exit at this many hours regardless of step count.
-TRAIN_HOURS_BUDGET = float(os.environ.get("TRAIN_HOURS_BUDGET", "24"))
+TRAIN_HOURS_BUDGET = float(os.environ.get("TRAIN_HOURS_BUDGET", "8"))
 
 # ----- Reference baselines (Samsung sudoku-extreme distribution) -----
 # Random over 11-token vocab; copy-clues = clue cells perfect, blanks uniform digit guess.
@@ -97,7 +97,7 @@ def parse_state(log: str) -> dict:
 
     # 50-step compact log lines
     for m in re.finditer(
-        r"\[\s*(\d+)/(\d+)\]\s+stage=(\w+)\s+loss=(\S+)\s+ce=(\S+)\s+"
+        r"\[\s*(\d+)/(\d+)\]\s+stage=(\S+)\s+loss=(\S+)\s+ce=(\S+)\s+"
         r"viol=\S+\s+halt=\S+\s+halt_w=\S+\s+\|\s+(\S+)\s+step/s",
         log,
     ):

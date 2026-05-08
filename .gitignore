@@ -6,3 +6,6 @@ checkpoints/
 runs/
 *.egg-info/
 .venv/
+.DS_Store
+*.swp
+wandb/
