@@ -167,55 +167,114 @@ Training takes ~3–7 days on Apple M3 Max, ~24 hr on a single RTX 4090.
 python scripts/eval_tier1_local.py runs/tier3/step_NNNNN 200
 ```
 
-## Next steps: pushing toward (and beyond) Samsung's 87.4%
+## Roadmap: from current state to beating Samsung's 87.4%
 
-Our current trajectory targets ~25–50% puzzle accuracy at the end of Tier 3's full schedule. To close the gap to Samsung's 87.4% — or surpass it — there are five concrete levers, ranked by realistic impact.
+Our current Tier 3 trajectory targets ~25–50% puzzle accuracy at end of training. The path forward to *match* and ultimately *exceed* Samsung's 87.4% Sudoku-Extreme record is broken into four concrete phases below, each with a specific deliverable, cost, and command-line.
 
-### 1. Stronger FP teacher (highest single-impact lever)
+### Phase 1 — Complete the FP teacher (immediate next step)
 
-Our current teacher is at 66.5% puzzle accuracy because we trained Tier 1 to only 30% of Samsung's full schedule due to budget constraints. **Distillation is upper-bounded by the teacher.** Continuing Tier 1 to the full 50,000 epochs would lift the teacher to ~85% and unlock a corresponding lift in the student.
+**Why it's the single highest-impact lever:** distillation is mathematically upper-bounded by the teacher. Our current teacher is at 66.5% puzzle accuracy only because we ran Tier 1 to 30% of Samsung's full schedule due to cloud budget constraints. Pushing the teacher to the full 50,000-epoch schedule lifts the ceiling on every downstream student.
 
-- **Cost:** ~$5 of cloud RTX 4090 time, or ~16 hr on the MacBook in parallel
-- **Expected gain:** student moves from 25–50% → 50–70% puzzle accuracy
+**Commands:**
 
-### 2. Multi-step deep-supervision distillation
+```bash
+# Option A — cloud (fastest, ~16 hr, ~$5):
+ssh root@<runpod-ip> "cd TinyRecursiveModels && python pretrain.py \
+  arch=trm data_paths=\"[data/sudoku-extreme-1k-aug-1000]\" evaluators=\"[]\" \
+  epochs=50000 eval_interval=1000 checkpoint_every_eval=True \
+  global_batch_size=256 lr=1e-4 puzzle_emb_lr=1e-4 \
+  weight_decay=1.0 puzzle_emb_weight_decay=1.0 \
+  arch.mlp_t=True arch.pos_encodings=none arch.L_layers=2 \
+  arch.H_cycles=3 arch.L_cycles=6 \
+  +run_name=tier1_full ema=True \
+  load_checkpoint=/path/to/tier1/step_54684"
 
-We currently distill teacher and student logits at a single ACT iteration per step. The teacher reaches 87.4% only via 16 ACT iterations of refinement — this multi-step reasoning is what we should be matching, not just final logits. Implementing per-iteration KD (loss at each of the 16 ACT iterations) should transfer more of the teacher's reasoning chain.
+# Option B — local Mac (free, ~2-3 days extra on M3 Max):
+# (run in parallel slot once Tier 3 plateau-stops)
+python pretrain.py [...same args, with --device mps and AdamW substitution...]
+```
 
-- **Cost:** ~2 days of dev work, no extra compute
-- **Expected gain:** +5–15% puzzle accuracy per BitDistill paper (arXiv:2510.13998)
+**Expected outcome:** FP teacher hits ~83-87% puzzle accuracy, matching Samsung's published number.
 
-### 3. Wider student (compensate for quantization noise)
+**Then re-launch Tier 3** with the new teacher checkpoint:
+```bash
+python scripts/tier3/train_bitdistill.py \
+  --teacher-ckpt runs/tier1_full/step_195000 \
+  --resume runs/tier3/step_NNNNN  # last good 1-bit student
+  [...other args...]
+```
 
-Quantization noise has lower variance impact in larger models. Bumping `hidden_size` from 512 → 768 (~12M params) keeps footprint at ~2.4 MB but should recover most of the FP→1-bit accuracy gap.
+The student should ride the lift: from current 25-50% → 50-70% range.
 
-- **Cost:** trivial config change, ~2× training wall time
-- **Expected gain:** +5–15% puzzle accuracy
-- **Trade-off:** weakens the "same architecture, only 1-bit different" story
+### Phase 2 — Multi-step deep-supervision distillation
 
-### 4. Test-time compute scaling
+**Why it matters:** Samsung's TRM doesn't get to 87.4% with one forward pass — it gets there by iterating ACT 16 times and refining its predictions. We currently distill teacher and student logits at a single ACT iteration per training step. We're missing the chain of reasoning between iterations.
 
-Samsung's TRM halts at ~6 average ACT iterations. Forcing more iterations at inference (32 or 64) lets the model do more reasoning passes per puzzle. This is "free" — it only costs eval-time compute.
+**Concrete change to `scripts/tier3/train_bitdistill.py`:**
+1. Run both student and teacher through K ACT iterations (no_grad for teacher; gradients on the last student iter).
+2. Compute KD loss at *each* iteration: `L_kd = sum_k T² × KL(softmax(t_k/T) || softmax(s_k/T))`.
+3. Add an attention-relational KD term per BitDistill paper: match teacher's and student's `z_H` representations at each iteration via cosine similarity.
 
-- **Cost:** zero training; ~4× eval time
-- **Expected gain:** +1–5% puzzle accuracy
+**Cost:** ~2 days of dev work, +30% per-step training compute.
 
-### 5. Full Sudoku-Extreme training set
+**Expected gain:** +5-15% puzzle accuracy (per BitDistill arXiv:2510.13998 ablations on transformer LMs).
 
-Samsung uses 1,000 puzzles × 1,000 augmentations (1M effective). The full Sudoku-Extreme training split has ~3.8M unique puzzles. Using the full set with augmentation dramatically increases data diversity.
+### Phase 3 — Wider student to absorb quantization noise
 
-- **Cost:** ~3× training time
-- **Expected gain:** +2–4% puzzle accuracy
+Ternary precision has a fixed quantization-noise floor. Bigger models compensate by averaging across more weights. Concrete change: bump `hidden_size` from 512 → 768.
 
-### Roadmap
-
-| Milestone | Target puzzle_acc | Combined techniques | Effort |
+| Variant | Params | Footprint at 1.58-bit | Expected puzzle_acc lift |
 |---|---|---|---|
-| **v1.0** (current Tier 3 to completion) | 25–50% | Tier 1 partial teacher + KD | ~7 more days Mac |
-| **v1.1** (stronger teacher) | 50–70% | + complete Tier 1 to full schedule | + $5 cloud / 16 hr Mac |
-| **v1.2** (deep supervision KD) | 65–80% | + per-iteration KD | + 2 days dev + 7 days train |
-| **v1.3** (wider student) | 75–87% | + 12M-param student | + 14 days train |
-| **v2.0** (beat Samsung) | **>87.4%** | + ensemble + full data + TTC scaling | + 2–4 weeks research |
+| Current (matches Samsung) | 5M | 1.4 MB | baseline |
+| Wide-student | 12M | 2.4 MB | +5–15% |
+| Mega-student | 28M | 5.6 MB | +10–20% |
+
+**Trade-off:** weakens the "same architecture, only 1-bit different" headline. Story shifts from *"we proved 1-bit works for recursive reasoning at the same scale"* to *"we proved 1-bit recursive reasoning is achievable at small scale"*. Still publishable.
+
+### Phase 4 — Beat Samsung's 87.4%
+
+This is the genuinely novel research portion. To exceed the published SOTA, we need contributions Samsung didn't have. Three orthogonal levers, used together:
+
+**Lever 4a — Ensemble of independently-trained 1-bit students**
+- Train 3 students with different seeds + initializations
+- Average their logit predictions at inference
+- **+2–4% puzzle accuracy** (well-documented across NN literature)
+- Inference cost stays low: 3 × 1.4 MB = 4.2 MB, still tiny
+
+**Lever 4b — Full Sudoku-Extreme training set**
+- Samsung uses 1,000 puzzles × 1,000 augmentations (1M effective)
+- The full Sudoku-Extreme has ~3.8M unique puzzles in train split
+- More data diversity → better generalization to the held-out test set
+- **+2–4% puzzle accuracy**
+
+**Lever 4c — Test-time compute scaling**
+- Samsung halts at ~6 ACT iterations average
+- Forcing 32 or 64 iterations at inference time gives more reasoning depth per puzzle
+- Results in correct solutions for harder puzzles that 16 iterations couldn't crack
+- **+1–5% puzzle accuracy** (free at inference)
+
+**Combined target: 88-92% puzzle accuracy with 1-bit weights — beating Samsung's FP record at 1/16 the footprint.**
+
+### Roadmap milestones
+
+| Milestone | Target puzzle_acc | Combined techniques | Time | $ |
+|---|---|---|---|---|
+| **v1.0** (current Tier 3 → completion) | **25–50%** | Tier 1 partial teacher + KD | ~5 more days Mac | $0 |
+| **v1.1** (full FP teacher) | **50–70%** | + complete Tier 1 to 50k epochs + restart Tier 3 | + 16 hr cloud / 3 days Mac | ~$5 |
+| **v1.2** (multi-step KD) | **65–80%** | + per-iteration KD + attention-relational KD | + 2 days dev + 7 days train | ~$5 |
+| **v1.3** (wider student) | **75–87%** | + hidden_size=768 (12M params) | + 10 days train | ~$5 |
+| **v2.0 — BEAT SAMSUNG** | **>87.4%** | + 3-model ensemble + full Sudoku-Extreme + 64-step inference | + 14 days train | ~$10–20 |
+
+**Total estimated timeline from v1.0 to v2.0: ~6 weeks.** Total estimated cloud cost: ~$30. The single most cost-effective intervention is Phase 1 (full teacher) — that alone unlocks the largest gain for the least money/time.
+
+### Why we believe 88%+ is achievable
+
+1. **Quantization tax is bounded.** BitNet b1.58 in transformer LMs typically loses <2% on language tasks. Recursive reasoning hasn't been tested but the theoretical noise floor isn't dramatically different.
+2. **Distillation transfers well.** BitDistill and related papers consistently show 90%+ of FP teacher performance recoverable via temperature-scaled KL distillation.
+3. **Ensemble compensates for any single-model weakness.** 3 independently-trained models averaging their logits is a textbook +3% accuracy mechanism.
+4. **Test-time compute is genuine extra capability.** Samsung leaves it on the table because their paper focuses on training efficiency. We can use it for free.
+
+The risk is that recursive reasoning has a fundamental sensitivity to weight precision we haven't anticipated — i.e., the chain of 16 ACT iterations amplifies quantization noise in a way single-pass models don't. We won't know until we try. Phase 1 (cheap teacher continuation) is a low-risk way to find out.
 
 ## Journey: why this approach (and what failed first)
 
