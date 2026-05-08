@@ -1,0 +1,51 @@
+cff-version: 1.2.0
+title: "1-Bit Recursive Sudoku Solver: BitDistill on Tiny Recursive Models"
+message: "If you use this software, please cite it using the metadata below."
+type: software
+authors:
+  - family-names: Barrett
+    given-names: Richard
+    affiliation: Independent researcher
+repository-code: "https://github.com/RNBBarrett/1-Bit-TRM-Sudoku-Solver"
+url: "https://github.com/RNBBarrett/1-Bit-TRM-Sudoku-Solver"
+abstract: >-
+  First 1-bit (BitNet b1.58 ternary weight) recursive reasoner for the
+  Sudoku-Extreme benchmark. The 7M-parameter Tiny Recursive Model (TRM)
+  architecture from Samsung SAIL Montreal is quantized to ternary weights
+  via knowledge distillation from a full-precision teacher. Direct
+  quantization-aware-training-from-scratch fails for recursive
+  architectures; KD with the v6 BitNet stabilization recipe (lambda
+  warmup, learnable per-layer alpha, median weight scaling, EMA at 0.999)
+  rescues it. Result: a ~1.4 MB ternary-weight Sudoku reasoner suitable
+  for microcontroller-class deployment.
+keywords:
+  - 1-bit-llm
+  - bitnet
+  - bitnet-b158
+  - ternary-weights
+  - recursive-reasoning
+  - tiny-recursive-model
+  - knowledge-distillation
+  - bitdistill
+  - sudoku
+  - quantization-aware-training
+  - efficient-ml
+  - edge-ai
+license: MIT
+references:
+  - type: article
+    authors:
+      - family-names: Jolicoeur-Martineau
+        given-names: Alexia
+    title: "Less is More: Recursive Reasoning with Tiny Networks"
+    year: 2025
+    url: "https://arxiv.org/abs/2510.04871"
+  - type: article
+    authors:
+      - family-names: Ma
+        given-names: Shuming
+      - family-names: Wang
+        given-names: Hongyu
+    title: "The Era of 1-bit LLMs: All Large Language Models are in 1.58 Bits"
+    year: 2024
+    url: "https://arxiv.org/abs/2402.17764"

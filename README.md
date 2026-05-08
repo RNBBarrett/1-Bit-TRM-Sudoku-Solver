@@ -7,6 +7,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4+-red.svg)](https://pytorch.org/)
+[![Tests](https://img.shields.io/badge/tests-77%20passing-brightgreen.svg)](tests/)
+[![Status](https://img.shields.io/badge/status-training%20in%20progress-orange.svg)](#current-results-training-ongoing)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![arXiv: TRM](https://img.shields.io/badge/arXiv-2510.04871%20%28TRM%29-b31b1b.svg)](https://arxiv.org/abs/2510.04871)
+[![arXiv: BitNet](https://img.shields.io/badge/arXiv-2402.17764%20%28BitNet%20b1.58%29-b31b1b.svg)](https://arxiv.org/abs/2402.17764)
+[![arXiv: BitDistill](https://img.shields.io/badge/arXiv-2510.13998%20%28BitDistill%29-b31b1b.svg)](https://arxiv.org/abs/2510.13998)
 
 ## TL;DR
 
